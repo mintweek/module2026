@@ -1,0 +1,2 @@
+# module2026
+Настройка сетевой инфраструктуры двух офисов (HQ и BR) с ISP:  Сеть: VLAN, GRE-туннель, OSPF, NAT, DHCP, DNS.  Домен: Samba DC (au-team.irpo) с пользователями и группой hq.  Хранилище: RAID0, NFS.  Сервисы: Chrony (NTP), Ansible, веб на Apache и Docker (порт 8080).  Безопасность: проброс портов (2026, 8080), nginx с аутентификацией.
