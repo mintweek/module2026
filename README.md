@@ -1,6 +1,6 @@
 # module2026
 Общая цель:
-Настроить сетевую инфраструктуру из двух офисов (HQ и BR), соединённых через провайдера ISP, с обеспечением:
+>Настроить сетевую инфраструктуру из двух офисов (HQ и BR), соединённых через провайдера ISP, с обеспечением:
 - доступности сервисов между офисами;
 - выхода в интернет;
 - доменной службы, DNS, NTP, файлового хранилища;
@@ -10,77 +10,77 @@
 
 Основные компоненты и их настройки
 1. Базовая адресация и имена устройств
-Заданы имена хостов (ISP, HQ-RTR, BR-RTR, HQ-SRV, BR-SRV, HQ-CLI).
-Назначены IP-адреса, маски, шлюзы согласно таблице.
-VLAN:
-VLAN 100 – для HQ-SRV (до 32 адресов)
-VLAN 200 – для HQ-CLI (до 16 адресов)
-VLAN 999 – управление (до 8 адресов)
+>Заданы имена хостов (ISP, HQ-RTR, BR-RTR, HQ-SRV, BR-SRV, HQ-CLI).
+>Назначены IP-адреса, маски, шлюзы согласно таблице.
+>VLAN:
+>VLAN 100 – для HQ-SRV (до 32 адресов)
+>VLAN 200 – для HQ-CLI (до 16 адресов)
+>VLAN 999 – управление (до 8 адресов)
 
 2. Маршрутизация и туннель
-GRE-туннель между HQ-RTR и BR-RTR.
-Динамическая маршрутизация OSPF через FRR (только по туннелю, с паролем).
+>GRE-туннель между HQ-RTR и BR-RTR.
+>Динамическая маршрутизация OSPF через FRR (только по туннелю, с паролем).
 
 3. Доступ в интернет
-На ISP: IP-forward и NAT (masquerade).
-На HQ-RTR и BR-RTR – NAT для локальных сетей в сторону ISP.
+>На ISP: IP-forward и NAT (masquerade).
+>На HQ-RTR и BR-RTR – NAT для локальных сетей в сторону ISP.
 
 4. DHCP (HQ-CLI)
-isc-dhcp-server на HQ-RTR.
-Исключён адрес роутера, DNS – HQ-SRV, DNS-суффикс – au-team.irpo.
+>isc-dhcp-server на HQ-RTR.
+>Исключён адрес роутера, DNS – HQ-SRV, DNS-суффикс – au-team.irpo.
 
 5. DNS
-Dnsmasq на HQ-SRV (основной DNS).
-Для домена au-team.irpo – пересылка на Samba DC (BR-SRV).
-Прямые и обратные записи для устройств (A, PTR).
+>Dnsmasq на HQ-SRV (основной DNS).
+>Для домена au-team.irpo – пересылка на Samba DC (BR-SRV).
+>Прямые и обратные записи для устройств (A, PTR).
 
 6. Samba Domain Controller (BR-SRV)
-Домен au-team.irpo.
-Созданы пользователи hquser1..5 и группа hq.
-HQ-CLI введён в домен.
-Права sudo для группы hq ограничены (cat, grep, id).
+>Домен au-team.irpo.
+>Созданы пользователи hquser1..5 и группа hq.
+>HQ-CLI введён в домен.
+>Права sudo для группы hq ограничены (cat, grep, id).
 
 7. Файловое хранилище и NFS
-RAID 0 (md0) из двух дисков, монтирование в /raid.
-NFS-сервер на HQ-SRV – папка /raid/nfs для сети HQ-CLI.
-На HQ-CLI – автомонтирование в /mnt/nfs.
+>RAID 0 (md0) из двух дисков, монтирование в /raid.
+>NFS-сервер на HQ-SRV – папка /raid/nfs для сети HQ-CLI.
+>На HQ-CLI – автомонтирование в /mnt/nfs.
 
 8. Синхронизация времени (Chrony)
-ISP – NTP-сервер (стратум 5).
-HQ-SRV, HQ-CLI, BR-RTR, BR-SRV – клиенты ISP.
+>ISP – NTP-сервер (стратум 5).
+>HQ-SRV, HQ-CLI, BR-RTR, BR-SRV – клиенты ISP.
 
 9. Ansible (BR-SRV)
-Инвентарь включает HQ-SRV, HQ-CLI, HQ-RTR, BR-RTR.
-Проверка ping – pong.
+>Инвентарь включает HQ-SRV, HQ-CLI, HQ-RTR, BR-RTR.
+>Проверка ping – pong.
 
 10. Docker-приложение (BR-SRV)
-Образы site_latest и mariadb_latest из Additional.iso.
-Контейнеры: testapp (web) и db (MariaDB).
-БД: testdb, пользователь test/P@ssw0rd.
-Доступно на порту 8080.
+>Образы site_latest и mariadb_latest из Additional.iso.
+>Контейнеры: testapp (web) и db (MariaDB).
+>БД: testdb, пользователь test/P@ssw0rd.
+>Доступно на порту 8080.
 
 11. Веб-приложение на Apache (HQ-SRV)
-LAMP: Apache + MariaDB + PHP.
-Импорт БД webdb из dump.sql, пользователь web/P@ssw0rd.
-Файлы приложения (index.php, logo.png) – из Additional.iso.
+>LAMP: Apache + MariaDB + PHP.
+>Импорт БД webdb из dump.sql, пользователь web/P@ssw0rd.
+>Файлы приложения (index.php, logo.png) – из Additional.iso.
 
 12. Проброс портов (статический DNAT)
-BR-RTR:
-8080 → BR-SRV:8080 (Docker)
-2026 → BR-SRV:2026 (SSH)
+>BR-RTR:
+>8080 → BR-SRV:8080 (Docker)
+>2026 → BR-SRV:2026 (SSH)
 
 HQ-RTR:
-8080 → HQ-SRV:80 (Apache)
-2026 → HQ-SRV:2026 (SSH)
+>8080 → HQ-SRV:80 (Apache)
+>2026 → HQ-SRV:2026 (SSH)
 
 13. Обратный прокси (nginx) на ISP
-web.au-team.irpo → веб-приложение HQ-SRV
-docker.au-team.irpo → Docker-приложение BR-SRV
-Web-based аутентификация для web.au-team.irpo (пользователь WEB/P@ssw0rd).
+>web.au-team.irpo → веб-приложение HQ-SRV
+>docker.au-team.irpo → Docker-приложение BR-SRV
+>Web-based аутентификация для web.au-team.irpo (пользователь WEB/P@ssw0rd).
 
 14. Дополнительно
-Часовой пояс – Asia/Yekaterinburg.
-На HQ-CLI установлен Яндекс Браузер.
+>Часовой пояс – Asia/Yekaterinburg.
+>На HQ-CLI установлен Яндекс Браузер.
 
 > [!WARNING]
 > На экзамене присутствует внешняя комиссия. 
