@@ -1,0 +1,225 @@
+Решение 1 модуля
+
+# ISP:
+hostnamectl set-hostname isp.au-team.irpo && exec bash
+nano /etc/network/interfaces, в файле (без ковычек):
+"auto eth0
+iface eth0 inet dhcp
+
+auto eth1
+iface eth1 inet static
+ address 172.16.1.1
+ netmask 255.255.255.240
+
+auto eth2
+iface eth2 inet static
+ address 172.16.2.1
+ netmask 255.255.255.240"
+
+systemctl restart networking
+echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf && sysctl -p
+iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+iptables-save > /etc/rules.v4
+Проверка: ip -br a ; ip r ; ping 8.8.8.8 ; ping ya.ru
+
+# HQ-RTR:
+hostnamectl set-hostname hq-rtr.au-team.irpo && exec bash
+nano /etc/network/interfaces, в файле (без ковычек):
+"auto eth0
+iface eth0 inet static
+ address 172.16.1.2
+ netmask 255.255.255.240
+ gateway 172.16.1.1
+
+auto eth1.100
+iface eth1.100 inet static
+ address 192.168.1.1
+ netmask 255.255.255.224
+ vlan-raw-device eth1
+
+auto eth1.200
+iface eth1.200 inet static
+ address 192.168.2.1
+ netmask 255.255.255.240
+ vlan-raw-device eth1
+
+auto eth1.999
+iface eth1.999 inet static
+ address 192.168.99.1
+ netmask 255.255.255.248
+ vlan-raw-device eth1
+
+auto gre1
+iface gre1 inet tunnel
+ address 10.0.0.1
+ netmask 255.255.255.252
+ mode gre
+ local 172.16.1.2
+ endpoint 172.16.2.2
+ ttl 255"
+
+systemctl restart networking && ip -br a
+echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf && sysctl -p
+iptables -t nat -A POSTROUTING -o eth0 -s 192.168.1.0/27 -j MASQUERADE
+iptables -t nat -A POSTROUTING -o eth0 -s 192.168.2.0/28 -j MASQUERADE
+iptables-save > /etc/rules.v4
+apt-get update && apt-get install -y frr isc-dhcp-server openssh-server
+sed -i 's/ospfd=no/ospfd=yes/' /etc/frr/daemons
+systemctl enable --now frr
+vtysh
+conf t
+router ospf
+ network 10.0.0.0/30 area 0
+ network 192.168.1.0/27 area 0
+ network 192.168.2.0/28 area 0
+exit
+interface gre1
+ ip ospf authentication message-digest
+ ip ospf message-digest-key 1 md5 P@ssw0rd
+end
+write
+exit
+nano /etc/default/isc-dhcp-server  -> INTERFACESv4="eth1.200"
+nano /etc/dhcp/dhcpd.conf, в файле (без ковычек):
+"subnet 192.168.2.0 netmask 255.255.255.240 {
+ range 192.168.2.2 192.168.2.14;
+ option routers 192.168.2.1;
+ option domain-name-servers 192.168.1.2;
+ option domain-name "au-team.irpo";
+}"
+systemctl enable --now isc-dhcp-server
+systemctl restart isc-dhcp-server
+Проверка: ping 172.16.1.1 ; ping 10.0.0.2 ; vtysh -c "show ip ospf neighbor" ; systemctl status isc-dhcp-server
+
+# BR-RTR:
+hostnamectl set-hostname br-rtr.au-team.irpo && exec bash
+nano /etc/network/interfaces, в файле (без ковычек):
+"auto eth0
+iface eth0 inet static
+ address 172.16.2.2
+ netmask 255.255.255.240
+ gateway 172.16.2.1
+
+auto eth1
+iface eth1 inet static
+ address 192.168.3.1
+ netmask 255.255.255.240
+
+auto gre1
+iface gre1 inet tunnel
+ address 10.0.0.2
+ netmask 255.255.255.252
+ mode gre
+ local 172.16.2.2
+ endpoint 172.16.1.2
+ ttl 255"
+
+systemctl restart networking && ip -br a
+echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf && sysctl -p
+iptables -t nat -A POSTROUTING -o eth0 -s 192.168.3.0/28 -j MASQUERADE
+iptables-save > /etc/rules.v4
+apt-get update && apt-get install -y frr openssh-server
+sed -i "s/ospfd=no/ospfd=yes/" /etc/frr/daemons
+systemctl enable --now frr
+vtysh
+conf t
+router ospf
+ network 10.0.0.0/30 area 0
+ network 192.168.3.0/28 area 0
+exit
+interface gre1
+ ip ospf authentication message-digest
+ ip ospf message-digest-key 1 md5 P@ssw0rd
+end
+write
+exit
+Проверка: ping 10.0.0.1 ; vtysh -c "show ip ospf route"
+
+# HQ-SRV:
+hostnamectl set-hostname hq-srv.au-team.irpo && exec bash
+apt-get update && apt-get install -y openssh dnsmasq
+mcedit /etc/net/ifaces/ens18/options, в файле (без ковычек):
+"BOOTPROTO=static
+TYPE=eth
+ONBOOT=yes
+DISABLED=no
+NM_CONTROLLED=no"
+
+echo 192.168.1.2/27 > /etc/net/ifaces/ens18/ipv4address
+echo default via 192.168.1.1 > /etc/net/ifaces/ens18/ipv4route
+systemctl restart network
+useradd -m -u 2026 -s /bin/bash sshuser
+echo "sshuser:P@ssw0rd" | chpasswd
+usermod -aG wheel sshuser
+mcedit /etc/sudoers  -> раскомментировать/добавить: %wheel ALL=(ALL:ALL) NOPASSWD: ALL
+mcedit /etc/openssh/sshd_config, в файле (без ковычек):
+"Port 2026
+PermitRootLogin no
+MaxAuthTries 2
+AllowUsers sshuser
+Banner /etc/banner"
+
+echo "Authorized access only" > /etc/banner
+systemctl enable --now sshd
+systemctl restart sshd
+mcedit /etc/dnsmasq.conf, в файле (без ковычек):
+"interface=*
+server=8.8.8.8
+domain=au-team.irpo
+listen-address=192.168.1.2
+no-resolv
+no-hosts
+
+address=/hq-rtr.au-team.irpo/192.168.1.1
+ptr-record=1.1.168.192.in-addr.arpa,hq-rtr.au-team.irpo
+address=/br-rtr.au-team.irpo/192.168.3.1
+address=/hq-srv.au-team.irpo/192.168.1.2
+ptr-record=3.1.168.192.in-addr.arpa,hq-srv.au-team.irpo
+address=/hq-cli.au-team.irpo/192.168.2.2
+ptr-record=2.2.168.192.in-addr.arpa,hq-cli.au-team.irpo
+address=/br-srv.au-team.irpo/192.168.3.2
+address=/docker.au-team.irpo/172.16.1.1
+address=/web.au-team.irpo/172.16.2.1"
+
+systemctl disable bind --now
+systemctl enable --now dnsmasq
+systemctl restart dnsmasq
+Проверка: ssh -p 2026 sshuser@192.168.1.2 ; nslookup hq-srv.au-team.irpo 127.0.0.1
+
+# BR-SRV:
+hostnamectl set-hostname br-srv.au-team.irpo && exec bash
+apt-get update && apt-get install -y openssh
+mcedit /etc/net/ifaces/ens18/options, в файле (без ковычек):
+"BOOTPROTO=static
+TYPE=eth
+ONBOOT=yes
+DISABLED=no
+NM_CONTROLLED=no"
+
+echo 192.168.3.2/28 > /etc/net/ifaces/ens18/ipv4address
+echo default via 192.168.3.1 > /etc/net/ifaces/ens18/ipv4route
+systemctl restart network
+useradd -m -u 2026 -s /bin/bash sshuser
+echo "sshuser:P@ssw0rd" | chpasswd
+usermod -aG wheel sshuser
+mcedit /etc/sudoers  -> %wheel ALL=(ALL:ALL) NOPASSWD: ALL
+mcedit /etc/openssh/sshd_config, в файле (без ковычек):
+"Port 2026
+PermitRootLogin no
+MaxAuthTries 2
+AllowUsers sshuser
+Banner /etc/banner"
+
+echo "Authorized access only" > /etc/banner
+systemctl enable --now sshd
+systemctl restart sshd
+Проверка: ssh -p 2026 sshuser@192.168.3.2
+
+# HQ-CLI:
+hostnamectl set-hostname hq-cli.au-team.irpo && exec bash
+Для VLAN: в Proxmox поставить VLAN Tag 200 на сетевом адаптере HQ-CLI. Если VLAN делается внутри ALT - создать ens18.200 по аналогии.
+systemctl restart network
+ip -br a
+ip r
+cat /etc/resolv.conf
+Проверка: ping 192.168.2.1 ; ping 192.168.1.2 ; ping 192.168.3.2 ; ping ya.ru
