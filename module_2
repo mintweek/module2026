@@ -1,0 +1,205 @@
+Решение 2 модуля
+
+BR-SRV:
+apt-get update && apt-get install -y task-samba-dc openssh
+rm -f /etc/samba/smb.conf
+samba-tool domain provision
+Ответы:
+Realm: AU-TEAM.IRPO
+Domain: AU-TEAM
+Server Role: dc
+DNS backend: SAMBA_INTERNAL
+DNS forwarder IP address: 192.168.1.2
+Пароль Administrator: P@ssw0rd
+cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
+systemctl disable bind --now
+mcedit /etc/samba/smb.conf -> в [global] добавить:
+interfaces = lo ens18
+bind interfaces only = yes
+systemctl enable --now samba
+systemctl restart samba
+samba-tool domain info 127.0.0.1
+samba-tool user create hquser1 P@ssw0rd
+samba-tool user create hquser2 P@ssw0rd
+samba-tool user create hquser3 P@ssw0rd
+samba-tool user create hquser4 P@ssw0rd
+samba-tool user create hquser5 P@ssw0rd
+samba-tool group add hq
+samba-tool group addmembers hq hquser1,hquser2,hquser3,hquser4,hquser5
+samba-tool group listmembers hq
+
+HQ-SRV:
+mcedit /etc/dnsmasq.conf
+Добавить строку:
+server=/au-team.irpo/192.168.3.2
+systemctl restart dnsmasq
+Проверка: nslookup br-srv.au-team.irpo 192.168.1.2
+
+HQ-CLI:
+su - root
+Вариант через GUI: acc -> Центр управления системой -> Пользователи -> Аутентификация -> Домен Active Directory -> au-team.irpo -> пароль Administrator.
+Если GUI не работает, пробуй:
+/usr/sbin/realm join -U Administrator AU-TEAM.IRPO
+/usr/sbin/realm list
+После ввода в домен перезагрузить HQ-CLI. Проверка: su - hquser1 ; id
+visudo или nano /etc/sudoers
+%hq ALL=(ALL) NOPASSWD: /bin/cat, /bin/grep, /usr/bin/id
+chmod 4755 /usr/bin/sudo
+chmod 440 /etc/sudoers
+Проверка под hquser1: sudo -l ; sudo id ; sudo cat /etc/hostname ; sudo ls должно быть запрещено
+
+HQ-SRV:
+В Proxmox добавить к HQ-SRV два диска по 1 ГБ. Потом на HQ-SRV:
+apt-get update && apt-get install -y mdadm
+lsblk  # найти диски, обычно /dev/sdb и /dev/sdc
+mdadm --create /dev/md0 --level=0 --raid-devices=2 /dev/sdb /dev/sdc
+mdadm --detail --scan > /etc/mdadm.conf
+fdisk /dev/md0  -> n -> p -> Enter -> Enter -> Enter -> w
+mkfs.ext4 /dev/md0p1
+mkdir -p /raid
+mount /dev/md0p1 /raid
+Быстрое автомонтирование через fstab:
+echo "/dev/md0p1 /raid ext4 defaults 0 0" >> /etc/fstab
+mount -a
+df -h | grep raid
+
+ISP:
+apt-get update && apt-get install -y chrony
+nano /etc/chrony/chrony.conf
+Закомментировать pool/rtcsync, добавить:
+local stratum 5
+allow 172.16.1.0/28
+allow 172.16.2.0/28
+allow 192.168.1.0/27
+allow 192.168.2.0/28
+allow 192.168.3.0/28
+systemctl enable --now chrony || systemctl enable --now chronyd
+systemctl restart chrony || systemctl restart chronyd
+chronyc sources
+
+HQ-SRV, HQ-CLI, BR-RTR, BR-SRV:
+apt-get install -y chrony
+mcedit /etc/chrony.conf  # ALT
+nano /etc/chrony/chrony.conf  # Astra
+Закомментировать pool/rtcsync, добавить:
+server 172.16.1.1 iburst
+systemctl restart chronyd || systemctl restart chrony
+chronyc sources
+
+BR-SRV:
+apt-get update && apt-get install -y ansible sshpass
+Проверить, что SSH включен на целях: HQ-SRV, HQ-CLI, HQ-RTR, BR-RTR. Если нет - поставить openssh и systemctl enable --now sshd/ssh.
+mcedit /etc/ansible/hosts
+[all]
+hq-srv ansible_host=192.168.1.2 ansible_user=sshuser ansible_port=2026 ansible_password=P@ssw0rd ansible_become=yes ansible_become_method=sudo
+hq-cli ansible_host=192.168.2.2 ansible_user=root ansible_password=P@ssw0rd
+hq-rtr ansible_host=172.16.1.2 ansible_user=net_admin ansible_password=P@ssw0rd ansible_become=yes
+br-rtr ansible_host=172.16.2.2 ansible_user=net_admin ansible_password=P@ssw0rd ansible_become=yes
+mcedit /etc/ansible/ansible.cfg
+[defaults]
+inventory=/etc/ansible/hosts
+host_key_checking=False
+interpreter_python=auto_silent
+ansible all -m ping
+
+BR-SRV:
+systemctl disable ahttpd --now
+apt-get install -y docker-engine docker-compose
+systemctl enable --now docker
+Подключить Additional.iso к BR-SRV, перезагрузить если диск не виден.
+mkdir -p /mnt/add_cd
+mount /dev/sr0 /mnt/add_cd
+cp -r /mnt/add_cd/docker /root/docker
+docker image load -i /root/docker/site_latest.tar
+docker image load -i /root/docker/mariadb_latest.tar
+docker images
+mkdir -p /root/testapp && cd /root/testapp
+mcedit docker-compose.yaml
+version: '3'
+services:
+  db:
+    image: mariadb_latest
+    container_name: db
+    environment:
+      MYSQL_DATABASE: testdb
+      MYSQL_USER: test
+      MYSQL_PASSWORD: P@ssw0rd
+      MYSQL_ROOT_PASSWORD: P@ssw0rd
+    restart: always
+  testapp:
+    image: site_latest
+    container_name: tespapp
+    ports:
+      - "8080:8080"
+    environment:
+      DB_HOST: db
+      DB_NAME: testdb
+      DB_USER: test
+      DB_PASSWORD: P@ssw0rd
+    depends_on:
+      - db
+    restart: always
+docker-compose up -d
+docker ps
+ss -tulpn | grep 8080
+Проверка с HQ-CLI: http://192.168.3.2:8080
+
+HQ-SRV:
+apt-get install -y apache2 mariadb php8.2 apache2-mod_php8.2 php8.2-mysqli
+systemctl enable --now httpd2
+systemctl enable --now mariadb
+Подключить Additional.iso к HQ-SRV:
+mkdir -p /mnt/add_cd
+mount /dev/sr0 /mnt/add_cd
+cp -r /mnt/add_cd/web /root/web
+mariadb -u root
+CREATE DATABASE webdb;
+CREATE USER 'web'@'localhost' IDENTIFIED BY 'P@ssw0rd';
+GRANT ALL PRIVILEGES ON webdb.* TO 'web'@'localhost' WITH GRANT OPTION;
+EXIT;
+mariadb -u web -p -D webdb < /root/web/dump.sql
+Скопировать файлы сайта в каталог Apache, например:
+cp -r /root/web/* /var/www/html/
+systemctl restart httpd2
+Если reverse proxy требует порт 8080: mcedit /etc/httpd2/conf/ports-enabled/http.conf -> Listen 8080 ; systemctl restart httpd2
+Проверка: curl http://192.168.1.2 или http://192.168.1.2:8080
+
+BR-RTR:
+iptables -t nat -A PREROUTING -d 172.16.2.2 -p tcp --dport 8080 -j DNAT --to-destination 192.168.3.2:8080
+iptables -t nat -A PREROUTING -d 172.16.2.2 -p tcp --dport 2026 -j DNAT --to-destination 192.168.3.2:2026
+iptables-save > /etc/rules.v4
+
+HQ-RTR:
+iptables -t nat -A PREROUTING -d 172.16.1.2 -p tcp --dport 8080 -j DNAT --to-destination 192.168.1.2:80
+iptables -t nat -A PREROUTING -d 172.16.1.2 -p tcp --dport 2026 -j DNAT --to-destination 192.168.1.2:2026
+iptables-save > /etc/rules.v4
+Проверка на роутерах: iptables -t nat -L -n -v
+
+ISP:
+apt-get update && apt-get install -y nginx apache2-utils
+nano /etc/nginx/sites-available/default
+server {
+    listen 80;
+    server_name web.au-team.irpo;
+    auth_basic "Web-authorization";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+    location / {
+        proxy_pass http://172.16.1.2:8080;
+    }
+}
+server {
+    listen 80;
+    server_name docker.au-team.irpo;
+    location / {
+        proxy_pass http://172.16.2.2:8080;
+    }
+}
+htpasswd -cb /etc/nginx/.htpasswd WEB P@ssw0rd
+nginx -t
+systemctl enable --now nginx
+systemctl restart nginx
+Проверка с HQ-CLI: http://web.au-team.irpo (логин WEB/P@ssw0rd), http://docker.au-team.irpo
+
+HQ-CLI:
+apt-get install -y yandex-browser-stable
+yandex-browser-stable --no-sandbox
